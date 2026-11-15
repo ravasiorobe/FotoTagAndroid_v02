@@ -3,13 +3,9 @@ package it.fototag.app;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
-import android.content.SharedPreferences;
-import android.database.Cursor;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
-import android.provider.OpenableColumns;
-import android.view.View;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -66,7 +62,6 @@ public final class MainActivity extends Activity {
         add.setOnClickListener(v->{
             String[] parts=newTags.getText().toString().split("[,;\\n]+");
             for(String part:parts){String tag=part.trim();if(tag.length()>0 && tag.length()<=120){
-                // Riusa la forma originale del tag per evitare duplicati con maiuscole diverse.
                 String existing=findExisting(tag);
                 String real=existing==null?tag:existing;
                 library.add(real);chosen.add(real);
@@ -75,15 +70,12 @@ public final class MainActivity extends Activity {
         });
         saveButton=button("4. Applica tag alle foto selezionate");root.addView(saveButton);
         saveButton.setEnabled(false);saveButton.setOnClickListener(v->confirmBulkSave());
-        status=label("I tag preesistenti di ciascuna foto saranno conservati. Prova prima con copie JPEG.",13,false);
+        status=label("I tag preesistenti saranno conservati. I tag saranno salvati in XMP e nel campo EXIF XPKeywords per compatibilità con Windows. Prova prima con copie JPEG.",13,false);
         root.addView(status);
-        root.addView(label("I tag restano memorizzati nell'app per le selezioni future. Non è previsto un limite artificiale al numero di fotografie; grandi selezioni richiedono più tempo e spazio libero.",12,false));
+        root.addView(label("I tag restano memorizzati nell'app per le selezioni future. Non è previsto un limite artificiale al numero di fotografie; grandi selezioni richiedono più tempo e spazio libero.",13,false));
         setContentView(scroll);refreshLibrary();
     }
-    private TextView label(String s,int size,boolean bold){
-        TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(Color.rgb(30,41,59));
-        if(bold)t.setTypeface(null,1);t.setPadding(0,px(9),0,px(9));return t;
-    }
+    private TextView label(String s,int size,boolean bold){TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(Color.rgb(30,41,59));if(bold)t.setTypeface(null,1);t.setPadding(0,px(9),0,px(9));return t;}
     private Button button(String s){Button b=new Button(this);b.setAllCaps(false);b.setText(s);return b;}
     private int px(int dp){return Math.round(getResources().getDisplayMetrics().density*dp);}
     private String findExisting(String tag){for(String x:library)if(x.equalsIgnoreCase(tag))return x;return null;}
@@ -100,13 +92,7 @@ public final class MainActivity extends Activity {
         updateButtons();
     }
     private void updateButtons(){if(saveButton!=null)saveButton.setEnabled(!busy&&!photos.isEmpty()&&!chosen.isEmpty());if(selectButton!=null)selectButton.setEnabled(!busy);}
-    private void choosePhotos(){
-        Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("image/jpeg");
-        i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,true);
-        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-        startActivityForResult(i,PICK_PHOTOS);
-    }
+    private void choosePhotos(){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("image/jpeg");i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,true);i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);startActivityForResult(i,PICK_PHOTOS);}
     @Override protected void onActivityResult(int request,int result,Intent data){
         super.onActivityResult(request,result,data);
         if(request!=PICK_PHOTOS||result!=RESULT_OK||data==null)return;
@@ -114,74 +100,48 @@ public final class MainActivity extends Activity {
         if(data.getClipData()!=null){for(int j=0;j<data.getClipData().getItemCount();j++)unique.add(data.getClipData().getItemAt(j).getUri());}
         if(data.getData()!=null)unique.add(data.getData());
         int flags=data.getFlags()&(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-        for(Uri u:unique){
-            if(u==null)continue;
-            photos.add(u);
-            try{getContentResolver().takePersistableUriPermission(u,flags);}catch(Exception ignored){}
-        }
-        selectedCount.setText(photos.size()+" fotografie selezionate");
-        status.setText("Pronto. I tag selezionati verranno aggiunti a ciascuna foto senza cancellare gli altri.");updateButtons();
+        for(Uri u:unique){if(u==null)continue;photos.add(u);try{getContentResolver().takePersistableUriPermission(u,flags);}catch(Exception ignored){}}
+        selectedCount.setText(photos.size()+" fotografie selezionate");status.setText("Pronto. I tag saranno aggiunti in XMP e EXIF XPKeywords, conservando quelli esistenti.");updateButtons();
     }
     private void confirmBulkSave(){
         if(photos.isEmpty()||chosen.isEmpty())return;
         new AlertDialog.Builder(this).setTitle("Modificare "+photos.size()+" fotografie?")
-            .setMessage("Aggiungerò "+chosen.size()+" tag a ciascun JPEG, conservando i tag XMP esistenti. Il salvataggio modifica gli originali: prova prima con copie di sicurezza. Procedere?")
+            .setMessage("Aggiungerò "+chosen.size()+" tag a ciascun JPEG, conservando i tag XMP/EXIF esistenti. Il salvataggio modifica gli originali: prova prima con copie di sicurezza. Procedere?")
             .setNegativeButton("Annulla",null).setPositiveButton("Applica",(d,w)->bulkSave()).show();
     }
     private void bulkSave(){
-        busy=true;updateButtons();
-        final ArrayList<Uri> targets=new ArrayList<>(photos);
-        final ArrayList<String> toAdd=new ArrayList<>(chosen);
+        busy=true;updateButtons();final ArrayList<Uri> targets=new ArrayList<>(photos);final ArrayList<String> toAdd=new ArrayList<>(chosen);
         worker.execute(()->{
             int ok=0,failed=0;String firstError=null;
             for(int i=0;i<targets.size();i++){
-                final int index=i+1;
-                runOnUiThread(()->status.setText("Elaborazione foto "+index+" di "+targets.size()+"..."));
-                try{saveOne(targets.get(i),toAdd);ok++;}
-                catch(Exception e){failed++;if(firstError==null)firstError=e.getMessage();}
+                final int index=i+1;runOnUiThread(()->status.setText("Elaborazione foto "+index+" di "+targets.size()+"..."));
+                try{saveOne(targets.get(i),toAdd);ok++;}catch(Exception e){failed++;if(firstError==null)firstError=e.getMessage();}
             }
             final int done=ok,errors=failed;final String detail=firstError;
-            runOnUiThread(()->{
-                busy=false;updateButtons();
-                status.setText("Completato: "+done+" foto aggiornate, "+errors+" errori."+(detail==null?"":" Primo errore: "+detail));
-                if(errors==0)Toast.makeText(this,"Tag applicati a "+done+" foto",Toast.LENGTH_LONG).show();
-            });
+            runOnUiThread(()->{busy=false;updateButtons();status.setText("Completato: "+done+" foto aggiornate, "+errors+" errori."+(detail==null?"":" Primo errore: "+detail));if(errors==0)Toast.makeText(this,"Tag applicati a "+done+" foto",Toast.LENGTH_LONG).show();});
         });
     }
     private void saveOne(Uri u,List<String> extra)throws Exception{
-        File original=File.createTempFile("fototag_src_",".jpg",getCacheDir());
-        File updated=File.createTempFile("fototag_dst_",".jpg",getCacheDir());
+        File original=File.createTempFile("fototag_src_",".jpg",getCacheDir());File updated=File.createTempFile("fototag_dst_",".jpg",getCacheDir());
         try{
-            try(InputStream in=getContentResolver().openInputStream(u);OutputStream out=new FileOutputStream(original)){
-                if(in==null)throw new IOException("Accesso alla fotografia negato");copy(in,out);
-            }
+            try(InputStream in=getContentResolver().openInputStream(u);OutputStream out=new FileOutputStream(original)){if(in==null)throw new IOException("Accesso alla fotografia negato");copy(in,out);}
             LinkedHashSet<String> all=new LinkedHashSet<>(JpegXmpEditor.readKeywords(original));
+            all.addAll(JpegXmpEditor.readXpKeywords(original));
             all.addAll(extra);
             JpegXmpEditor.writeKeywords(original,updated,new ArrayList<>(all));
-            // Verifica i metadati prima di sovrascrivere il documento selezionato.
-            List<String> check=JpegXmpEditor.readKeywords(updated);
-            if(!check.containsAll(all))throw new IOException("Verifica XMP non superata");
+            List<String> check=JpegXmpEditor.readKeywords(updated);List<String> checkWindows=JpegXmpEditor.readXpKeywords(updated);
+            if(!check.containsAll(all)||!checkWindows.containsAll(all))throw new IOException("Verifica XMP/EXIF non superata");
             try(OutputStream out=getContentResolver().openOutputStream(u,"wt");InputStream in=new FileInputStream(updated)){
                 if(out==null)throw new IOException("File protetto da scrittura");copy(in,out);
             }catch(Exception writeError){
-                try(OutputStream out=getContentResolver().openOutputStream(u,"wt");InputStream in=new FileInputStream(original)){
-                    if(out==null)throw new IOException("Ripristino non disponibile");copy(in,out);
-                }catch(Exception restore){throw new IOException("Scrittura fallita; impossibile garantire ripristino: "+writeError.getMessage(),restore);}
+                try(OutputStream out=getContentResolver().openOutputStream(u,"wt");InputStream in=new FileInputStream(original)){if(out==null)throw new IOException("Ripristino non disponibile");copy(in,out);}
+                catch(Exception restore){throw new IOException("Scrittura fallita; impossibile garantire ripristino: "+writeError.getMessage(),restore);}
                 throw writeError;
             }
         }finally{original.delete();updated.delete();}
     }
-    private static void copy(InputStream in,OutputStream out)throws IOException{
-        byte[] buf=new byte[65536];int n;while((n=in.read(buf))!=-1)out.write(buf,0,n);
-    }
-    private void loadLibrary(){
-        try{JSONArray a=new JSONArray(getSharedPreferences(PREFS,MODE_PRIVATE).getString(KEY,"[]"));
-            for(int i=0;i<a.length();i++){String v=a.optString(i).trim();if(!v.isEmpty())library.add(v);}
-        }catch(Exception ignored){}
-    }
-    private void persistLibrary(){
-        JSONArray array=new JSONArray();for(String t:library)array.put(t);
-        getSharedPreferences(PREFS,MODE_PRIVATE).edit().putString(KEY,array.toString()).apply();
-    }
+    private static void copy(InputStream in,OutputStream out)throws IOException{byte[] buf=new byte[65536];int n;while((n=in.read(buf))!=-1)out.write(buf,0,n);}
+    private void loadLibrary(){try{JSONArray a=new JSONArray(getSharedPreferences(PREFS,MODE_PRIVATE).getString(KEY,"[]"));for(int i=0;i<a.length();i++){String v=a.optString(i).trim();if(!v.isEmpty())library.add(v);}}catch(Exception ignored){}}
+    private void persistLibrary(){JSONArray array=new JSONArray();for(String t:library)array.put(t);getSharedPreferences(PREFS,MODE_PRIVATE).edit().putString(KEY,array.toString()).apply();}
     @Override protected void onDestroy(){worker.shutdown();super.onDestroy();}
 }
